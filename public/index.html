@@ -1,1 +1,237 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Drift City</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Segoe UI', sans-serif; }
+        
+        /* UI OVERLAY */
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box; }
+        .hud-text { color: white; text-shadow: 0 0 5px black; font-weight: bold; font-size: 20px; text-transform: uppercase; }
+        #drift-indicator { color: #00ffcc; font-size: 40px; opacity: 0; transition: opacity 0.2s; text-align: center; }
+
+        /* LOGIN SCREEN */
+        #login { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; align-items: center; justify-content: center; z-index: 100; pointer-events: auto; }
+        .box { background: #222; padding: 40px; border-radius: 10px; text-align: center; border: 2px solid #00d2ff; box-shadow: 0 0 50px rgba(0, 210, 255, 0.2); }
+        h1 { color: #fff; margin: 0 0 20px 0; font-style: italic; letter-spacing: 2px; }
+        input { padding: 15px; font-size: 1.2rem; border-radius: 5px; border: none; outline: none; text-align: center; margin-bottom: 20px; width: 250px; background: #333; color: white; }
+        button { padding: 15px 40px; font-size: 1.2rem; background: linear-gradient(45deg, #00d2ff, #007bff); border: none; border-radius: 5px; cursor: pointer; color: #fff; font-weight: bold; transition: 0.2s; text-transform: uppercase; }
+        button:hover { transform: scale(1.05); box-shadow: 0 0 20px #00d2ff; }
+
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+    <div id="login">
+        <div class="box">
+            <h1>Drift City</h1>
+            <input id="username" placeholder="ENTER DRIVER NAME" maxlength="12" autofocus autocomplete="off">
+            <br>
+            <button onclick="startGame()">START ENGINE</button>
+        </div>
+    </div>
+
+    <div id="ui" style="display:none;">
+        <div class="hud-text">WASD / Arrows to Drive | SPACE to Drift</div>
+        <div id="drift-indicator">DRIFTING!</div>
+        <div class="hud-text" id="speed-display">0 KM/H</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game Vars
+        let WIDTH, HEIGHT;
+        let selfId = null;
+        let players = {};
+        let world = { w: 3000, h: 3000 };
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+        
+        // Colors
+        const BG_COLOR = "#1a1a1a";
+        const GRID_COLOR = "#333";
+
+        // --- SETUP ---
+        function resize() {
+            WIDTH = window.innerWidth;
+            HEIGHT = window.innerHeight;
+            canvas.width = WIDTH;
+            canvas.height = HEIGHT;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- CONTROLS ---
+        window.addEventListener('keydown', e => {
+            if(e.key==='w' || e.key==='ArrowUp') keys.w = true;
+            if(e.key==='s' || e.key==='ArrowDown') keys.s = true;
+            if(e.key==='a' || e.key==='ArrowLeft') keys.a = true;
+            if(e.key==='d' || e.key==='ArrowRight') keys.d = true;
+            if(e.key===' ') keys.space = true;
+        });
+        window.addEventListener('keyup', e => {
+            if(e.key==='w' || e.key==='ArrowUp') keys.w = false;
+            if(e.key==='s' || e.key==='ArrowDown') keys.s = false;
+            if(e.key==='a' || e.key==='ArrowLeft') keys.a = false;
+            if(e.key==='d' || e.key==='ArrowRight') keys.d = false;
+            if(e.key===' ') keys.space = false;
+        });
+
+        // --- NETWORK HANDLERS ---
+        function startGame() {
+            const name = document.getElementById('username').value;
+            if(name.trim()) {
+                document.getElementById('login').style.display = 'none';
+                document.getElementById('ui').style.display = 'flex';
+                socket.emit('join', name);
+            }
+        }
+
+        socket.on('init', data => {
+            selfId = data.selfId;
+            players = data.players;
+            world = data.world;
+            requestAnimationFrame(renderLoop);
+            setInterval(sendInput, 1000/60); // Send input 60 times/sec
+        });
+
+        socket.on('stateUpdate', serverPlayers => {
+            players = serverPlayers;
+            updateHUD();
+        });
+
+        socket.on('playerJoined', p => players[p.id] = p);
+        socket.on('playerLeft', id => delete players[id]);
+
+        function sendInput() {
+            if(!selfId) return;
+            socket.emit('input', {
+                up: keys.w,
+                down: keys.s,
+                left: keys.a,
+                right: keys.d,
+                drift: keys.space
+            });
+        }
+
+        function updateHUD() {
+            if(players[selfId]) {
+                const p = players[selfId];
+                const speed = Math.abs(p.speed * 10).toFixed(0);
+                document.getElementById('speed-display').innerText = speed + " KM/H";
+                document.getElementById('drift-indicator').style.opacity = (p.drift && speed > 5) ? 1 : 0;
+            }
+        }
+
+        // --- RENDERING ---
+        function drawCar(p) {
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.angle);
+
+            // Drift Smoke Particles (Randomized visual)
+            if(p.drift && Math.abs(p.speed) > 2) {
+                ctx.fillStyle = `rgba(200,200,200,${Math.random() * 0.5})`;
+                ctx.beginPath();
+                ctx.arc(-25, -10, 8, 0, Math.PI*2);
+                ctx.arc(-25, 10, 8, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            // Shadow
+            ctx.fillStyle = "rgba(0,0,0,0.5)";
+            ctx.fillRect(-20, -12, 44, 24);
+
+            // Car Body
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.roundRect(-22, -11, 44, 22, 5);
+            ctx.fill();
+
+            // Roof
+            ctx.fillStyle = "rgba(0,0,0,0.3)";
+            ctx.fillRect(-10, -9, 20, 18);
+
+            // Headlights
+            ctx.fillStyle = "#fff";
+            ctx.shadowColor = "#fff";
+            ctx.shadowBlur = 10;
+            ctx.fillRect(18, -10, 4, 6);
+            ctx.fillRect(18, 4, 4, 6);
+            ctx.shadowBlur = 0;
+
+            ctx.restore();
+
+            // Name Tag
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 14px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(p.name, p.x, p.y - 30);
+        }
+
+        function drawWorld(camX, camY) {
+            // 1. Draw Background (Grid)
+            ctx.fillStyle = BG_COLOR;
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            ctx.save();
+            // Move entire world relative to player (Camera Logic)
+            ctx.translate(-camX + WIDTH/2, -camY + HEIGHT/2);
+
+            // 2. Draw Map Boundaries
+            ctx.strokeStyle = "#444";
+            ctx.lineWidth = 20;
+            ctx.strokeRect(0, 0, world.w, world.h);
+
+            // 3. Draw Grid Lines
+            ctx.strokeStyle = "#252525";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let x = 0; x <= world.w; x += 100) { ctx.moveTo(x, 0); ctx.lineTo(x, world.h); }
+            for (let y = 0; y <= world.h; y += 100) { ctx.moveTo(0, y); ctx.lineTo(world.w, y); }
+            ctx.stroke();
+
+            // 4. Draw "Drift Zone" (Big Circle)
+            ctx.fillStyle = "rgba(0, 210, 255, 0.1)";
+            ctx.beginPath();
+            ctx.arc(1500, 1500, 400, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(0, 210, 255, 0.3)";
+            ctx.lineWidth = 5;
+            ctx.stroke();
+
+            // 5. Draw City Blocks (Obstacles - Visual only for now)
+            ctx.fillStyle = "#111";
+            ctx.shadowColor = "#000";
+            ctx.shadowBlur = 20;
+            for(let i=0; i<5; i++) {
+                ctx.fillRect(500 + i*300, 500, 150, 150);
+                ctx.fillRect(500 + i*300, 2300, 150, 150);
+            }
+            ctx.shadowBlur = 0;
+
+            // 6. Draw Players
+            Object.values(players).forEach(p => drawCar(p));
+
+            ctx.restore();
+        }
+
+        function renderLoop() {
+            if(selfId && players[selfId]) {
+                const me = players[selfId];
+                drawWorld(me.x, me.y);
+            }
+            requestAnimationFrame(renderLoop);
+        }
+
+    </script>
+</body>
+</html>
